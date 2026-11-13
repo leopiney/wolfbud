@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/leopiney/wolfbud/compare/wolfbud-v0.8.0...wolfbud-v0.9.0) (2026-11-13)
+
+
+### Features
+
+* switch to Scribe v3 Live with live entity annotations ([3a36971](https://github.com/leopiney/wolfbud/commit/3a36971011165ba5b26081d9db4eecedc0ddbbf4))
+
 ## [0.8.0](https://github.com/leopiney/wolfbud/compare/wolfbud-v0.7.0...wolfbud-v0.8.0) (2026-08-04)
 
 
