@@ -10,9 +10,9 @@
 
 ---
 
-Wolfbud is a macOS menubar app that gives you **speech-to-text** and **text-to-speech** from anywhere on your Mac. It uses the [ElevenLabs](https://elevenlabs.io) [Scribe v2 real-time](https://elevenlabs.io/blog/introducing-scribe-v2) model for transcription, through your own API key.
+Wolfbud is a macOS menubar app that gives you **speech-to-text** and **text-to-speech** from anywhere on your Mac. It uses the [ElevenLabs](https://elevenlabs.io) Scribe v3 Live model for transcription, through your own API key.
 
-- **Speech-to-Text** — Press **⌘ Shift Space** to start recording, speak, then press **⌘ Shift Space** again to stop. The transcript is pasted directly into the active app using the ElevenLabs Scribe v2 real-time API.
+- **Speech-to-Text** — Press **⌘ Shift Space** to start recording, speak, then press **⌘ Shift Space** again to stop. The transcript is pasted directly into the active app using the ElevenLabs Scribe v3 Live API. As you speak, names, tools, file names, sections and other key terms are highlighted inline and collected as chips, and those annotations are kept in your history.
 - **Text-to-Speech** — Copy any text to your clipboard and have it read aloud using ElevenLabs voices.
 
 <p align="center">
@@ -25,7 +25,7 @@ Wolfbud is a macOS menubar app that gives you **speech-to-text** and **text-to-s
 - Requires an [ElevenLabs API key](https://elevenlabs.io/app/settings/api-keys)
 
 > [!NOTE]
-> **Not affiliated with ElevenLabs.** Wolfbud is an independent, personal side project. It is **not** affiliated with, endorsed by, or sponsored by ElevenLabs. It simply calls the ElevenLabs Scribe v2 real-time model using an API key you provide. "ElevenLabs" and "Scribe" are trademarks of ElevenLabs.
+> **Not affiliated with ElevenLabs.** Wolfbud is an independent, personal side project. It is **not** affiliated with, endorsed by, or sponsored by ElevenLabs. It simply calls the ElevenLabs Scribe v3 Live model using an API key you provide. "ElevenLabs" and "Scribe" are trademarks of ElevenLabs.
 
 ## Install from Releases
 

@@ -3,6 +3,8 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { listen } from "@tauri-apps/api/event";
+import AnnotatedText from "./components/AnnotatedText.vue";
+import type { Annotation } from "./lib/annotations";
 
 interface HistoryEntry {
   id: string;
@@ -10,6 +12,7 @@ interface HistoryEntry {
   text: string;
   timestamp: string;
   audio_id: string | null;
+  annotations?: Annotation[];
 }
 
 const activeTab = ref<"scribe" | "readaloud">("scribe");
@@ -94,10 +97,7 @@ function formatTime(ts: string): string {
   return new Date(ts).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
-function preview(text: string): string {
-  if (text.length <= 120) return text;
-  return text.slice(0, 120) + "…";
-}
+const PREVIEW_LENGTH = 120;
 
 function toggleExpand(id: string) {
   expandedId.value = expandedId.value === id ? null : id;
@@ -299,7 +299,11 @@ async function clearAll() {
             </div>
           </div>
           <div class="entry-text">
-            {{ expandedId === entry.id ? entry.text : preview(entry.text) }}
+            <AnnotatedText
+              :text="entry.text"
+              :annotations="entry.annotations"
+              :max-length="expandedId === entry.id ? undefined : PREVIEW_LENGTH"
+            />
           </div>
         </div>
       </template>

@@ -12,6 +12,19 @@ pub struct HistoryEntry {
     pub text: String,
     pub timestamp: String, // ISO 8601
     pub audio_id: Option<String>,
+    /// Scribe v3 entity annotations (names, tools, file names, …) as spans
+    /// into `text`. Absent on read-aloud entries and older transcriptions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<Annotation>,
+}
+
+/// A highlighted span of a transcription. Offsets are JS string (UTF-16)
+/// indices into the entry text — opaque to Rust, only the frontend reads them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Annotation {
+    pub start: usize,
+    pub end: usize,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,7 +61,11 @@ fn save_history(path: &Path, history: &HistoryFile) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn save_transcription(app: AppHandle, text: String) -> Result<(), String> {
+pub async fn save_transcription(
+    app: AppHandle,
+    text: String,
+    annotations: Option<Vec<Annotation>>,
+) -> Result<(), String> {
     let path = history_path(&app)?;
     let mut history = load_history(&path);
 
@@ -59,6 +76,7 @@ pub async fn save_transcription(app: AppHandle, text: String) -> Result<(), Stri
         text,
         timestamp: now.to_rfc3339(),
         audio_id: None,
+        annotations: annotations.unwrap_or_default(),
     };
 
     history.entries.insert(0, entry);
@@ -91,6 +109,7 @@ pub async fn save_readaloud(app: AppHandle, text: String, audio_id: String) -> R
         text,
         timestamp: now.to_rfc3339(),
         audio_id: Some(audio_id),
+        annotations: Vec::new(),
     };
 
     history.entries.insert(0, entry);

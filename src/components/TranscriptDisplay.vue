@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from "vue";
+import AnnotatedText from "./AnnotatedText.vue";
+import type { Annotation, Segment } from "../lib/annotations";
 
 const props = defineProps<{
   isRecording: boolean;
   partialText: string;
-  committedText: string;
+  segments: Segment[];
+  partialAnnotations?: Annotation[];
 }>();
 
 const transcriptEl = ref<HTMLElement | null>(null);
@@ -17,15 +20,22 @@ function scrollToBottom() {
   });
 }
 
-watch(() => props.committedText, scrollToBottom);
+watch(() => props.segments.length, scrollToBottom);
 watch(() => props.partialText, scrollToBottom);
 </script>
 
 <template>
   <div ref="transcriptEl" class="transcript">
-    <span class="committed">{{ committedText }}</span>
-    <span class="partial">{{ partialText }}</span>
-    <span v-if="isRecording && !committedText && !partialText" class="placeholder">
+    <span class="committed">
+      <template v-for="(seg, i) in segments" :key="i">
+        <!-- Untrimmed: annotation offsets index into the raw segment text. -->
+        <AnnotatedText :text="seg.text" :annotations="seg.annotations" />{{ " " }}
+      </template>
+    </span>
+    <span class="partial"
+      ><AnnotatedText :text="partialText" :annotations="partialAnnotations"
+    /></span>
+    <span v-if="isRecording && !segments.length && !partialText" class="placeholder">
       Start speaking…
     </span>
   </div>

@@ -6,12 +6,20 @@ import RecordingDot from "./components/RecordingDot.vue";
 import WolfBadge from "./components/WolfBadge.vue";
 import TranscriptDisplay from "./components/TranscriptDisplay.vue";
 import ActionBar from "./components/ActionBar.vue";
+import AnnotationChips from "./components/AnnotationChips.vue";
 import ChunkProgress from "./components/ChunkProgress.vue";
 import PlaybackControls from "./components/PlaybackControls.vue";
 import SetupScreen from "./components/SetupScreen.vue";
 import { useScribe } from "./composables/useScribe";
 import { useReadAloud } from "./composables/useReadAloud";
 import { useTauriEvents } from "./composables/useTauriEvents";
+import {
+  buildTermMatcher,
+  flattenSegments,
+  uniqueChips,
+  type Annotation,
+  type Segment,
+} from "./lib/annotations";
 
 // ── Tab state ────────────────────────────────────────────────────────────────
 const activeTab = ref<"scribe" | "readaloud">("scribe");
@@ -24,7 +32,9 @@ const errorMsg = ref("");
 const isRecording = ref(false);
 const {
   partialText,
+  segments,
   committedText,
+  reset: resetTranscript,
   micLabel,
   error: scribeError,
   audioLevel,
@@ -34,6 +44,43 @@ const {
   acquireMic,
   isLive: scribeIsLive,
 } = useScribe();
+
+// ── Live annotations ─────────────────────────────────────────────────────────
+// Scribe only annotates committed segments, so anything still being spoken (or
+// committed but awaiting its entities) gets provisional highlights from terms
+// Scribe already recognized — earlier this session or in past transcriptions.
+// Scribe's own annotations replace them as soon as they arrive.
+const historyTerms = ref<{ text: string; annotations: Annotation[] }[]>([]);
+
+async function loadHistoryTerms() {
+  try {
+    const entries =
+      await invoke<{ kind: string; text: string; annotations?: Annotation[] }[]>("get_history");
+    historyTerms.value = entries
+      .filter((e) => e.kind === "scribe" && e.annotations?.length)
+      .map((e) => ({ text: e.text, annotations: e.annotations! }))
+      .reverse(); // oldest first, so the most recent labeling wins
+  } catch (e) {
+    console.warn("[wolfbud] couldn't load history terms:", e);
+  }
+}
+
+const matchKnownTerms = computed(() =>
+  buildTermMatcher([...historyTerms.value, ...segments.value.filter((s) => !s.pending)])
+);
+
+const liveSegments = computed<Segment[]>(() =>
+  segments.value.map((s) => (s.pending ? { ...s, annotations: matchKnownTerms.value(s.text) } : s))
+);
+
+const partialAnnotations = computed(() => matchKnownTerms.value(partialText.value));
+
+const chips = computed(() =>
+  uniqueChips([
+    ...liveSegments.value,
+    { text: partialText.value, annotations: partialAnnotations.value },
+  ])
+);
 
 // ── Read Aloud ───────────────────────────────────────────────────────────────
 const readaloudErrorMsg = ref("");
@@ -59,8 +106,8 @@ const {
 // ── Scribe actions ───────────────────────────────────────────────────────────
 
 async function startRecording() {
-  committedText.value = "";
-  partialText.value = "";
+  resetTranscript();
+  loadHistoryTerms();
   errorMsg.value = "";
   try {
     await scribeStart();
@@ -83,6 +130,14 @@ async function grantMicAndRecord() {
   }
 }
 
+/** Copy the finished dictation and store it (with its annotations) in history. */
+async function saveTranscript() {
+  const { text, annotations } = flattenSegments(liveSegments.value);
+  if (!text) return;
+  await writeText(text).catch(console.error);
+  await invoke("save_transcription", { text, annotations }).catch(console.error);
+}
+
 async function stopRecording() {
   try {
     await scribeStop();
@@ -90,11 +145,7 @@ async function stopRecording() {
     console.error("Error stopping recording:", err);
   }
   isRecording.value = false;
-  const text = committedText.value.trim();
-  if (text) {
-    await writeText(text).catch(console.error);
-    await invoke("save_transcription", { text }).catch(console.error);
-  }
+  await saveTranscript();
 }
 
 async function stopAndDismiss() {
@@ -104,11 +155,7 @@ async function stopAndDismiss() {
     console.error("Error stopping recording:", err);
   }
   isRecording.value = false;
-  const text = committedText.value.trim();
-  if (text) {
-    await writeText(text).catch(console.error);
-    await invoke("save_transcription", { text }).catch(console.error);
-  }
+  await saveTranscript();
   await invoke("hide_overlay").catch(console.error);
 }
 
@@ -395,8 +442,10 @@ useTauriEvents("reset-overlay", async () => {
           <TranscriptDisplay
             :is-recording="isRecording"
             :partial-text="partialText"
-            :committed-text="committedText"
+            :segments="liveSegments"
+            :partial-annotations="partialAnnotations"
           />
+          <AnnotationChips :chips="chips" />
           <ActionBar
             v-if="!isRecording && committedText.trim()"
             @paste="paste"

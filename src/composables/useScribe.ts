@@ -1,5 +1,6 @@
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { ENTITY_LABELS, toAnnotations, type RawEntity, type Segment } from "../lib/annotations";
 
 // Active mic stream — held only while a session is running, then released
 // in stop() so the macOS mic indicator turns off when not transcribing.
@@ -11,9 +12,36 @@ let persistentStream: MediaStream | null = null;
 // mic (whatever native rate the WebView gives us) down to exactly this.
 const TARGET_SAMPLE_RATE = 16000;
 
+const MODEL_ID = "scribe_v3_live";
+
+// Silence (seconds) after which VAD commits a segment. Scribe only runs entity
+// detection on committed segments (partials carry no entities), so this is
+// what bounds how soon highlights can appear. The API default is 1.5 s, which
+// natural dictation rarely reaches — in testing 30 s of continuous speech got
+// zero commits. 0.5 s commits at ordinary pauses without fragmenting the
+// transcript; 0.3 s was faster but started splitting phrases mid-thought.
+const VAD_SILENCE_SECS = "0.5";
+
+// How long stop() waits for the final forced commit (and its entities) before
+// giving up and folding the partial transcript in as plain text. Commit →
+// entities round-trips in ~300 ms in practice.
+const FINAL_COMMIT_TIMEOUT_MS = 1500;
+
+// 100 ms of silence, sent with `commit: true` to force-commit the trailing
+// partial transcript when the user stops mid-sentence.
+const COMMIT_SILENCE = new Int16Array(TARGET_SAMPLE_RATE / 10);
+
 export function useScribe() {
   const partialText = ref("");
-  const committedText = ref("");
+  // Committed transcript, one entry per Scribe commit, each with its entity
+  // annotations once the follow-up `committed_transcript_entities` arrives.
+  const segments = ref<Segment[]>([]);
+  const committedText = computed(() =>
+    segments.value
+      .map((s) => s.text.trim())
+      .filter(Boolean)
+      .join(" ")
+  );
   const micLabel = ref("");
   const error = ref("");
   const audioLevel = ref(0); // 0–1 RMS, updated per chunk for the level meter
@@ -30,6 +58,71 @@ export function useScribe() {
   // Every PCM16 chunk we actually send, kept so stop() can write a .wav that is
   // a byte-exact copy of what the model received.
   let recordedChunks: Int16Array[] = [];
+
+  // Resolves stop()'s wait for the final forced commit once the transcript is
+  // fully committed and annotated.
+  let onSettled: (() => void) | null = null;
+
+  function isSettled(): boolean {
+    return !partialText.value.trim() && segments.value.every((s) => !s.pending);
+  }
+
+  function reset() {
+    segments.value = [];
+    partialText.value = "";
+  }
+
+  function handleMessage(raw: string) {
+    let data: {
+      message_type: string;
+      text?: string;
+      entities?: RawEntity[];
+      error?: string;
+      message?: string;
+    };
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return; // ignore malformed messages
+    }
+
+    switch (data.message_type) {
+      case "partial_transcript":
+        if (data.text !== undefined) partialText.value = data.text;
+        break;
+      case "committed_transcript":
+        if (data.text !== undefined) {
+          segments.value.push({ text: data.text, annotations: [], pending: true });
+          partialText.value = "";
+        }
+        break;
+      case "committed_transcript_entities": {
+        const text = data.text ?? "";
+        // Entities arrive shortly after their transcript; match by text,
+        // falling back to the oldest segment still waiting.
+        const seg =
+          segments.value.find((s) => s.pending && s.text === text) ??
+          segments.value.find((s) => s.pending);
+        if (seg) {
+          seg.annotations = toAnnotations(seg.text, data.entities ?? []);
+          seg.pending = false;
+        }
+        break;
+      }
+      case "session_started":
+      case "committed_transcript_with_timestamps":
+      case "warning":
+        break;
+      default:
+        // Every other message type is an error (auth_error, quota_exceeded,
+        // input_error, …) — surface it instead of failing silently.
+        if (data.message_type?.includes("error") || data.error || data.message) {
+          error.value = `${data.message_type}: ${data.error ?? data.message ?? "unknown error"}`;
+        }
+    }
+
+    if (onSettled && isSettled()) onSettled();
+  }
 
   /** True only while a real recording session is live (WebSocket open). Lets
    * callers distinguish an actual session from an `isRecording` flag left
@@ -95,7 +188,14 @@ export function useScribe() {
       console.log("[scribe] token received:", token.slice(0, 8) + "…");
 
       // ── 2. Open WebSocket ───────────────────────────────────────────────────
-      const url = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?token=${encodeURIComponent(token)}&model_id=scribe_v2_realtime&commit_strategy=vad`;
+      const params = new URLSearchParams({
+        token,
+        model_id: MODEL_ID,
+        commit_strategy: "vad",
+        vad_silence_threshold_secs: VAD_SILENCE_SECS,
+      });
+      for (const label of ENTITY_LABELS) params.append("entity_detection", label);
+      const url = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?${params}`;
       console.log("[scribe] connecting WebSocket…");
       ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
@@ -114,28 +214,12 @@ export function useScribe() {
       // Log every message from the server (transcripts, session events, errors)
       ws.onmessage = (event) => {
         console.log("[scribe] ←", event.data);
-        try {
-          const data = JSON.parse(event.data as string) as {
-            message_type: string;
-            text?: string;
-          };
-          if (data.message_type === "partial_transcript" && data.text !== undefined) {
-            partialText.value = data.text;
-          } else if (
-            (data.message_type === "committed_transcript" ||
-              data.message_type === "committed_transcript_with_timestamps") &&
-            data.text !== undefined
-          ) {
-            committedText.value += data.text + " ";
-            partialText.value = "";
-          }
-        } catch {
-          // ignore malformed messages
-        }
+        handleMessage(event.data as string);
       };
 
       ws.onclose = (e) => {
         console.warn("[scribe] WebSocket closed — code:", e.code, "reason:", e.reason);
+        onSettled?.();
       };
 
       ws.onerror = (e) => {
@@ -194,6 +278,8 @@ export function useScribe() {
           JSON.stringify({
             message_type: "input_audio_chunk",
             audio_base_64: audio,
+            commit: false,
+            sample_rate: TARGET_SAMPLE_RATE,
           })
         );
       };
@@ -249,10 +335,15 @@ export function useScribe() {
     // back to confirm the audio the model received is clean.
     await saveDebugRecording();
 
-    // Fold any pending partial transcript into committed text so the
-    // clipboard write that follows always contains the full dictation.
+    // Force-commit whatever was said since the last VAD commit so the final
+    // sentence is properly transcribed and annotated rather than left as a
+    // raw partial.
+    await flushFinalCommit();
+
+    // Fold any partial that still didn't commit (timeout / dropped socket) so
+    // the clipboard write that follows always contains the full dictation.
     if (partialText.value.trim()) {
-      committedText.value += partialText.value + " ";
+      segments.value.push({ text: partialText.value, annotations: [], pending: true });
       partialText.value = "";
     }
 
@@ -265,6 +356,33 @@ export function useScribe() {
       ws.close();
       ws = null;
     }
+  }
+
+  async function flushFinalCommit() {
+    const pendingSpeech = partialText.value.trim() !== "";
+    const pendingEntities = segments.value.some((s) => s.pending);
+    if (!ws || ws.readyState !== WebSocket.OPEN || (!pendingSpeech && !pendingEntities)) return;
+
+    if (pendingSpeech) {
+      ws.send(
+        JSON.stringify({
+          message_type: "input_audio_chunk",
+          audio_base_64: int16ToBase64(COMMIT_SILENCE),
+          commit: true,
+          sample_rate: TARGET_SAMPLE_RATE,
+        })
+      );
+    }
+
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(done, FINAL_COMMIT_TIMEOUT_MS);
+      function done() {
+        clearTimeout(timer);
+        onSettled = null;
+        resolve();
+      }
+      onSettled = done;
+    });
   }
 
   /** Encode the recorded PCM as a WAV and hand it to Rust to store on disk. */
@@ -288,7 +406,9 @@ export function useScribe() {
 
   return {
     partialText,
+    segments,
     committedText,
+    reset,
     micLabel,
     error,
     audioLevel,
