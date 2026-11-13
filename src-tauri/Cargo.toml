@@ -1,6 +1,6 @@
 [package]
 name = "wolfbud"
-version = "0.8.0"
+version = "0.9.0"
 description = "Speech-to-text and text-to-speech for macOS, one hotkey away."
 authors = ["Leonardo Piñeyro"]
 license = "MIT"
